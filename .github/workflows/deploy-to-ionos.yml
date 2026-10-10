@@ -1,0 +1,281 @@
+name: Build Branch + Deploy (IONOS - SFTP)
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_publish:
+    name: Build & Publish to build branch
+    runs-on: ubuntu-latest
+    outputs:
+      branch: ${{ steps.ctx.outputs.branch }}
+      target_dir: ${{ steps.ctx.outputs.target_dir }}
+      target_env: ${{ steps.ctx.outputs.target_env }}
+      artifact_path: ${{ steps.ctx.outputs.artifact_path }}
+      deploy_enabled: ${{ steps.ctx.outputs.deploy_enabled }}
+      publish_enabled: ${{ steps.ctx.outputs.publish_enabled }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve build/deploy context
+        id: ctx
+        run: |
+          set -euo pipefail
+
+          EVENT="${GITHUB_EVENT_NAME}"
+
+          if [ "${EVENT}" = "pull_request" ]; then
+            BRANCH="${GITHUB_BASE_REF}"
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+            DEPLOY_ENABLED="false"
+            IS_FORK_PR="${{ github.event.pull_request.head.repo.fork }}"
+            if [ "${IS_FORK_PR}" = "true" ]; then
+              PUBLISH_ENABLED="false"
+            else
+              PUBLISH_ENABLED="true"
+            fi
+          else
+            BRANCH="${GITHUB_REF_NAME}"
+            DEPLOY_ENABLED="true"
+            PUBLISH_ENABLED="true"
+          fi
+
+          case "$BRANCH" in
+            staging)
+              TARGET_DIR="/litt/staging"
+              TARGET_ENV="staging"
+              if [ "${EVENT}" = "pull_request" ]; then
+                ARTIFACT_PATH="preview/staging-pr-${PR_NUMBER}"
+              else
+                ARTIFACT_PATH="staging/current"
+              fi
+              ;;
+            main|production)
+              TARGET_DIR="/litt/production"
+              TARGET_ENV="production"
+              if [ "${EVENT}" = "pull_request" ]; then
+                ARTIFACT_PATH="preview/production-pr-${PR_NUMBER}"
+              else
+                ARTIFACT_PATH="production/current"
+              fi
+              ;;
+            *)
+              echo "Unsupported branch for build/deploy: $BRANCH"
+              exit 1
+              ;;
+          esac
+
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "target_dir=$TARGET_DIR" >> "$GITHUB_OUTPUT"
+          echo "target_env=$TARGET_ENV" >> "$GITHUB_OUTPUT"
+          echo "artifact_path=$ARTIFACT_PATH" >> "$GITHUB_OUTPUT"
+          echo "deploy_enabled=$DEPLOY_ENABLED" >> "$GITHUB_OUTPUT"
+          echo "publish_enabled=$PUBLISH_ENABLED" >> "$GITHUB_OUTPUT"
+
+      - name: Print release info
+        run: |
+          VERSION="$(cat VERSION 2>/dev/null || echo "0.0.0")"
+          echo "Building from commit: ${{ github.sha }}"
+          echo "Event: ${{ github.event_name }}"
+          echo "Branch: ${{ steps.ctx.outputs.branch }}"
+          echo "Target: ${{ steps.ctx.outputs.target_env }}"
+          echo "Build branch path: ${{ steps.ctx.outputs.artifact_path }}"
+          echo "Deploy enabled: ${{ steps.ctx.outputs.deploy_enabled }}"
+          echo "Publish to build branch: ${{ steps.ctx.outputs.publish_enabled }}"
+          echo "Version: ${VERSION}"
+          echo "Branch: ${{ steps.ctx.outputs.branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "Target: ${{ steps.ctx.outputs.target_env }}" >> $GITHUB_STEP_SUMMARY
+          echo "Build path: ${{ steps.ctx.outputs.artifact_path }}" >> $GITHUB_STEP_SUMMARY
+          echo "Deploy enabled: ${{ steps.ctx.outputs.deploy_enabled }}" >> $GITHUB_STEP_SUMMARY
+          echo "Publish to build branch: ${{ steps.ctx.outputs.publish_enabled }}" >> $GITHUB_STEP_SUMMARY
+          echo "Version: ${VERSION}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate static site
+        run: npm run generate
+
+      - name: Prepare build folder
+        run: |
+          set -euo pipefail
+          rm -rf build
+          mkdir -p build
+          cp -a .output/public/. build/
+
+      - name: Generate version files
+        run: |
+          set -euo pipefail
+          VERSION="$(cat VERSION 2>/dev/null || echo "0.0.0")"
+          COMMIT="$(git rev-parse --short HEAD)"
+          BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          mkdir -p build
+
+          cat > build/version.json <<EOF
+          {
+            "version": "${VERSION}",
+            "commit": "${COMMIT}",
+            "buildDateUtc": "${BUILD_DATE}",
+            "branch": "${{ steps.ctx.outputs.branch }}",
+            "event": "${{ github.event_name }}",
+            "buildPath": "${{ steps.ctx.outputs.artifact_path }}"
+          }
+          EOF
+
+          echo "version=${VERSION}" > build/version.txt
+          echo "commit=${COMMIT}" >> build/version.txt
+          echo "buildDateUtc=${BUILD_DATE}" >> build/version.txt
+          echo "branch=${{ steps.ctx.outputs.branch }}" >> build/version.txt
+          echo "event=${{ github.event_name }}" >> build/version.txt
+          echo "buildPath=${{ steps.ctx.outputs.artifact_path }}" >> build/version.txt
+
+      - name: Ensure output exists
+        run: |
+          test -d "build" || (echo "Missing build folder" && exit 1)
+          echo "Build output ready."
+
+      - name: Publish build output to build branch
+        if: steps.ctx.outputs.publish_enabled == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          ARTIFACT_PATH="${{ steps.ctx.outputs.artifact_path }}"
+
+          rm -rf /tmp/build-branch
+
+          if git ls-remote --exit-code --heads "${REPO_URL}" build >/dev/null 2>&1; then
+            git clone --depth 1 --branch build "${REPO_URL}" /tmp/build-branch
+          else
+            git clone --depth 1 "${REPO_URL}" /tmp/build-branch
+            cd /tmp/build-branch
+            git checkout --orphan build
+            git rm -rf . || true
+          fi
+
+          cd /tmp/build-branch
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          mkdir -p "$(dirname "${ARTIFACT_PATH}")"
+          mkdir -p "${ARTIFACT_PATH}"
+          find "${ARTIFACT_PATH}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          mkdir -p "${ARTIFACT_PATH}"
+          cp -a "${GITHUB_WORKSPACE}/build/." "${ARTIFACT_PATH}/"
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No build-branch changes to commit."
+          else
+            git commit -m "build(${ARTIFACT_PATH}): ${GITHUB_SHA}"
+            git push origin build
+          fi
+
+  deploy:
+    name: Deploy from build branch (IONOS)
+    needs: build_publish
+    if: needs.build_publish.outputs.deploy_enabled == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate required SFTP secrets
+        env:
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_USERNAME: ${{ secrets.SFTP_USERNAME }}
+          SFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
+          SFTP_PORT: ${{ secrets.SFTP_PORT }}
+        run: |
+          set -euo pipefail
+
+          missing=0
+          for name in SFTP_HOST SFTP_USERNAME SFTP_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing required repository secret: ${name}"
+              missing=1
+            fi
+          done
+
+          if [ -z "${SFTP_PORT:-}" ]; then
+            echo "SFTP_PORT secret not set. Defaulting to 22."
+          fi
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Checkout build branch snapshot
+        uses: actions/checkout@v4
+        with:
+          ref: build
+          path: build-branch
+          fetch-depth: 1
+
+      - name: Prepare deploy source from build branch
+        run: |
+          set -euo pipefail
+
+          ARTIFACT_PATH="${{ needs.build_publish.outputs.artifact_path }}"
+          SRC_DIR="build-branch/${ARTIFACT_PATH}"
+
+          test -d "${SRC_DIR}" || (echo "Missing build-branch artifact path: ${SRC_DIR}" && exit 1)
+
+          rm -rf deploy-src
+          mkdir -p deploy-src
+          cp -a "${SRC_DIR}/." deploy-src/
+
+          echo "Deploying from build branch path: ${ARTIFACT_PATH}"
+          echo "Target env: ${{ needs.build_publish.outputs.target_env }}"
+          echo "Target dir: ${{ needs.build_publish.outputs.target_dir }}"
+
+      - name: Install lftp
+        run: sudo apt-get update && sudo apt-get install -y lftp
+
+      - name: Deploy to IONOS via SFTP
+        env:
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_PORT: ${{ secrets.SFTP_PORT }}
+          SFTP_USERNAME: ${{ secrets.SFTP_USERNAME }}
+          SFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
+          REMOTE_DIR: ${{ needs.build_publish.outputs.target_dir }}
+        run: |
+          set -euo pipefail
+
+          PORT="${SFTP_PORT:-22}"
+
+          lftp -u "${SFTP_USERNAME},${SFTP_PASSWORD}" -p "${PORT}" "sftp://${SFTP_HOST}" <<EOF
+          set ssl:verify-certificate no
+          set sftp:auto-confirm yes
+          set net:timeout 20
+          set net:max-retries 2
+          set net:reconnect-interval-base 5
+
+          mkdir -p "${REMOTE_DIR}"
+          mirror --reverse --delete --parallel=4 "deploy-src" "${REMOTE_DIR}"
+
+          bye
+          EOF
