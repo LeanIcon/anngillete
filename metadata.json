@@ -1,0 +1,7 @@
+{
+  "name": "AnnGillette Tutoring & Learning Platform",
+  "description": "Expert 1:1 tutoring, personalised exam preparation for 11+, GCSE, and A Levels with purposeful digital learning support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
