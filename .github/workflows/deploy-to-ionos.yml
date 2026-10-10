@@ -1,4 +1,4 @@
-name: Build Branch + Deploy (IONOS - SFTP)
+name: Build Branch + Deploy (IONOS SFTP)
 
 on:
   push:
@@ -12,12 +12,12 @@ permissions:
   contents: write
 
 concurrency:
-  group: build-deploy-${{ github.ref }}
-  cancel-in-progress: true
+  group: build-deploy
+  cancel-in-progress: false
 
 jobs:
   build_publish:
-    name: Build & Publish to build branch
+    name: Build and publish static site
     runs-on: ubuntu-latest
     outputs:
       branch: ${{ steps.ctx.outputs.branch }}
@@ -33,23 +33,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve build/deploy context
+      - name: Resolve build and deployment context
         id: ctx
+        shell: bash
         run: |
           set -euo pipefail
 
           EVENT="${GITHUB_EVENT_NAME}"
 
-          if [ "${EVENT}" = "pull_request" ]; then
+          if [[ "$EVENT" == "pull_request" ]]; then
             BRANCH="${GITHUB_BASE_REF}"
-            PR_NUMBER="${{ github.event.pull_request.number }}"
             DEPLOY_ENABLED="false"
-            IS_FORK_PR="${{ github.event.pull_request.head.repo.fork }}"
-            if [ "${IS_FORK_PR}" = "true" ]; then
-              PUBLISH_ENABLED="false"
-            else
-              PUBLISH_ENABLED="true"
-            fi
+            PUBLISH_ENABLED="false"
           else
             BRANCH="${GITHUB_REF_NAME}"
             DEPLOY_ENABLED="true"
@@ -58,25 +53,17 @@ jobs:
 
           case "$BRANCH" in
             staging)
-              TARGET_DIR="/litt/staging"
+              TARGET_DIR="/kunden/homepages/34/d684835060/htdocs/clients/anngillete/staging"
               TARGET_ENV="staging"
-              if [ "${EVENT}" = "pull_request" ]; then
-                ARTIFACT_PATH="preview/staging-pr-${PR_NUMBER}"
-              else
-                ARTIFACT_PATH="staging/current"
-              fi
+              ARTIFACT_PATH="staging/current"
               ;;
             main|production)
-              TARGET_DIR="/litt/production"
+              TARGET_DIR="/kunden/homepages/34/d684835060/htdocs/clients/anngillete"
               TARGET_ENV="production"
-              if [ "${EVENT}" = "pull_request" ]; then
-                ARTIFACT_PATH="preview/production-pr-${PR_NUMBER}"
-              else
-                ARTIFACT_PATH="production/current"
-              fi
+              ARTIFACT_PATH="production/current"
               ;;
             *)
-              echo "Unsupported branch for build/deploy: $BRANCH"
+              echo "::error::Unsupported branch: $BRANCH"
               exit 1
               ;;
           esac
@@ -88,25 +75,22 @@ jobs:
           echo "deploy_enabled=$DEPLOY_ENABLED" >> "$GITHUB_OUTPUT"
           echo "publish_enabled=$PUBLISH_ENABLED" >> "$GITHUB_OUTPUT"
 
-      - name: Print release info
+      - name: Print release information
+        shell: bash
         run: |
+          set -euo pipefail
           VERSION="$(cat VERSION 2>/dev/null || echo "0.0.0")"
-          echo "Building from commit: ${{ github.sha }}"
-          echo "Event: ${{ github.event_name }}"
-          echo "Branch: ${{ steps.ctx.outputs.branch }}"
-          echo "Target: ${{ steps.ctx.outputs.target_env }}"
-          echo "Build branch path: ${{ steps.ctx.outputs.artifact_path }}"
-          echo "Deploy enabled: ${{ steps.ctx.outputs.deploy_enabled }}"
-          echo "Publish to build branch: ${{ steps.ctx.outputs.publish_enabled }}"
-          echo "Version: ${VERSION}"
-          echo "Branch: ${{ steps.ctx.outputs.branch }}" >> $GITHUB_STEP_SUMMARY
-          echo "Target: ${{ steps.ctx.outputs.target_env }}" >> $GITHUB_STEP_SUMMARY
-          echo "Build path: ${{ steps.ctx.outputs.artifact_path }}" >> $GITHUB_STEP_SUMMARY
-          echo "Deploy enabled: ${{ steps.ctx.outputs.deploy_enabled }}" >> $GITHUB_STEP_SUMMARY
-          echo "Publish to build branch: ${{ steps.ctx.outputs.publish_enabled }}" >> $GITHUB_STEP_SUMMARY
-          echo "Version: ${VERSION}" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "### Build summary"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Event: \`${GITHUB_EVENT_NAME}\`"
+            echo "- Branch: \`${{ steps.ctx.outputs.branch }}\`"
+            echo "- Environment: \`${{ steps.ctx.outputs.target_env }}\`"
+            echo "- Artifact path: \`${{ steps.ctx.outputs.artifact_path }}\`"
+            echo "- Version: \`${VERSION}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Use Node.js 20
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -119,114 +103,138 @@ jobs:
         run: npm run generate
 
       - name: Prepare build folder
+        shell: bash
         run: |
           set -euo pipefail
+          test -d .output/public || {
+            echo "::error::Nuxt output directory .output/public was not created."
+            exit 1
+          }
+
           rm -rf build
           mkdir -p build
           cp -a .output/public/. build/
 
-      - name: Generate version files
+      - name: Generate version metadata
+        shell: bash
+        env:
+          BUILD_BRANCH: ${{ steps.ctx.outputs.branch }}
+          BUILD_EVENT: ${{ github.event_name }}
+          BUILD_ARTIFACT_PATH: ${{ steps.ctx.outputs.artifact_path }}
         run: |
           set -euo pipefail
+
           VERSION="$(cat VERSION 2>/dev/null || echo "0.0.0")"
           COMMIT="$(git rev-parse --short HEAD)"
           BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-          mkdir -p build
+          export VERSION COMMIT BUILD_DATE
 
-          cat > build/version.json <<EOF
-          {
-            "version": "${VERSION}",
-            "commit": "${COMMIT}",
-            "buildDateUtc": "${BUILD_DATE}",
-            "branch": "${{ steps.ctx.outputs.branch }}",
-            "event": "${{ github.event_name }}",
-            "buildPath": "${{ steps.ctx.outputs.artifact_path }}"
-          }
-          EOF
+          node <<'NODE'
+          const fs = require('node:fs');
 
-          echo "version=${VERSION}" > build/version.txt
-          echo "commit=${COMMIT}" >> build/version.txt
-          echo "buildDateUtc=${BUILD_DATE}" >> build/version.txt
-          echo "branch=${{ steps.ctx.outputs.branch }}" >> build/version.txt
-          echo "event=${{ github.event_name }}" >> build/version.txt
-          echo "buildPath=${{ steps.ctx.outputs.artifact_path }}" >> build/version.txt
+          const metadata = {
+            version: process.env.VERSION,
+            commit: process.env.COMMIT,
+            buildDateUtc: process.env.BUILD_DATE,
+            branch: process.env.BUILD_BRANCH,
+            event: process.env.BUILD_EVENT,
+            buildPath: process.env.BUILD_ARTIFACT_PATH
+          };
 
-      - name: Ensure output exists
+          fs.writeFileSync(
+            'build/version.json',
+            JSON.stringify(metadata, null, 2) + '\n'
+          );
+
+          fs.writeFileSync(
+            'build/version.txt',
+            Object.entries(metadata)
+              .map(([key, value]) => `${key}=${value}`)
+              .join('\n') + '\n'
+          );
+          NODE
+
+      - name: Verify build output
+        shell: bash
         run: |
-          test -d "build" || (echo "Missing build folder" && exit 1)
-          echo "Build output ready."
+          set -euo pipefail
+          test -d build
+          test -n "$(find build -mindepth 1 -maxdepth 1 -print -quit)"
+          echo "Build output is ready."
 
       - name: Publish build output to build branch
         if: steps.ctx.outputs.publish_enabled == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_PATH: ${{ steps.ctx.outputs.artifact_path }}
+        shell: bash
         run: |
           set -euo pipefail
 
           REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          ARTIFACT_PATH="${{ steps.ctx.outputs.artifact_path }}"
+          WORKTREE="/tmp/build-branch"
 
-          rm -rf /tmp/build-branch
+          rm -rf "$WORKTREE"
 
-          if git ls-remote --exit-code --heads "${REPO_URL}" build >/dev/null 2>&1; then
-            git clone --depth 1 --branch build "${REPO_URL}" /tmp/build-branch
+          if git ls-remote --exit-code --heads "$REPO_URL" build >/dev/null 2>&1; then
+            git clone --depth 1 --branch build "$REPO_URL" "$WORKTREE"
           else
-            git clone --depth 1 "${REPO_URL}" /tmp/build-branch
-            cd /tmp/build-branch
-            git checkout --orphan build
-            git rm -rf . || true
+            git clone --no-checkout "$REPO_URL" "$WORKTREE"
+            git -C "$WORKTREE" checkout --orphan build
+            git -C "$WORKTREE" rm -rf . >/dev/null 2>&1 || true
           fi
 
-          cd /tmp/build-branch
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          cd "$WORKTREE"
 
-          mkdir -p "$(dirname "${ARTIFACT_PATH}")"
-          mkdir -p "${ARTIFACT_PATH}"
-          find "${ARTIFACT_PATH}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-          mkdir -p "${ARTIFACT_PATH}"
-          cp -a "${GITHUB_WORKSPACE}/build/." "${ARTIFACT_PATH}/"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          mkdir -p "$(dirname "$ARTIFACT_PATH")"
+          rm -rf "$ARTIFACT_PATH"
+          mkdir -p "$ARTIFACT_PATH"
+          cp -a "$GITHUB_WORKSPACE/build/." "$ARTIFACT_PATH/"
 
           git add -A
+
           if git diff --cached --quiet; then
             echo "No build-branch changes to commit."
           else
             git commit -m "build(${ARTIFACT_PATH}): ${GITHUB_SHA}"
-            git push origin build
+            git push origin HEAD:build
           fi
 
   deploy:
-    name: Deploy from build branch (IONOS)
+    name: Deploy to IONOS via SFTP
     needs: build_publish
     if: needs.build_publish.outputs.deploy_enabled == 'true'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Validate required SFTP secrets
+      - name: Validate IONOS SFTP secrets
+        shell: bash
         env:
-          SFTP_HOST: ${{ secrets.SFTP_HOST }}
-          SFTP_USERNAME: ${{ secrets.SFTP_USERNAME }}
-          SFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
-          SFTP_PORT: ${{ secrets.SFTP_PORT }}
+          IONOS_HOST: ${{ secrets.IONOS_HOST }}
+          IONOS_USER: ${{ secrets.IONOS_USER }}
+          IONOS_PASSWORD: ${{ secrets.IONOS_PASSWORD }}
+          IONOS_PORT: ${{ secrets.IONOS_PORT }}
         run: |
           set -euo pipefail
 
           missing=0
-          for name in SFTP_HOST SFTP_USERNAME SFTP_PASSWORD; do
-            if [ -z "${!name:-}" ]; then
-              echo "::error::Missing required repository secret: ${name}"
+
+          for name in IONOS_HOST IONOS_USER IONOS_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing repository secret: ${name}"
               missing=1
             fi
           done
 
-          if [ -z "${SFTP_PORT:-}" ]; then
-            echo "SFTP_PORT secret not set. Defaulting to 22."
-          fi
-
-          if [ "$missing" -ne 0 ]; then
+          if [[ "$missing" -ne 0 ]]; then
             exit 1
           fi
+
+          echo "IONOS_PORT defaults to 22 when not configured."
 
       - name: Checkout build branch snapshot
         uses: actions/checkout@v4
@@ -234,48 +242,58 @@ jobs:
           ref: build
           path: build-branch
           fetch-depth: 1
+          persist-credentials: false
 
-      - name: Prepare deploy source from build branch
+      - name: Prepare deployment source
+        shell: bash
+        env:
+          ARTIFACT_PATH: ${{ needs.build_publish.outputs.artifact_path }}
+          TARGET_ENV: ${{ needs.build_publish.outputs.target_env }}
+          TARGET_DIR: ${{ needs.build_publish.outputs.target_dir }}
         run: |
           set -euo pipefail
 
-          ARTIFACT_PATH="${{ needs.build_publish.outputs.artifact_path }}"
           SRC_DIR="build-branch/${ARTIFACT_PATH}"
 
-          test -d "${SRC_DIR}" || (echo "Missing build-branch artifact path: ${SRC_DIR}" && exit 1)
+          if [[ ! -d "$SRC_DIR" ]]; then
+            echo "::error::Build artifact not found: ${SRC_DIR}"
+            exit 1
+          fi
 
           rm -rf deploy-src
           mkdir -p deploy-src
-          cp -a "${SRC_DIR}/." deploy-src/
+          cp -a "$SRC_DIR/." deploy-src/
 
-          echo "Deploying from build branch path: ${ARTIFACT_PATH}"
-          echo "Target env: ${{ needs.build_publish.outputs.target_env }}"
-          echo "Target dir: ${{ needs.build_publish.outputs.target_dir }}"
+          echo "Deploying ${TARGET_ENV} to ${TARGET_DIR}"
 
       - name: Install lftp
-        run: sudo apt-get update && sudo apt-get install -y lftp
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes lftp
 
       - name: Deploy to IONOS via SFTP
+        shell: bash
         env:
-          SFTP_HOST: ${{ secrets.SFTP_HOST }}
-          SFTP_PORT: ${{ secrets.SFTP_PORT }}
-          SFTP_USERNAME: ${{ secrets.SFTP_USERNAME }}
-          SFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
+          IONOS_HOST: ${{ secrets.IONOS_HOST }}
+          IONOS_USER: ${{ secrets.IONOS_USER }}
+          IONOS_PASSWORD: ${{ secrets.IONOS_PASSWORD }}
+          IONOS_PORT: ${{ secrets.IONOS_PORT }}
           REMOTE_DIR: ${{ needs.build_publish.outputs.target_dir }}
         run: |
           set -euo pipefail
 
-          PORT="${SFTP_PORT:-22}"
+          PORT="${IONOS_PORT:-22}"
 
-          lftp -u "${SFTP_USERNAME},${SFTP_PASSWORD}" -p "${PORT}" "sftp://${SFTP_HOST}" <<EOF
-          set ssl:verify-certificate no
-          set sftp:auto-confirm yes
-          set net:timeout 20
+          lftp -u "${IONOS_USER},${IONOS_PASSWORD}" \
+            -p "$PORT" "sftp://${IONOS_HOST}" <<EOF
+          set cmd:fail-exit yes
+          set net:timeout 30
           set net:max-retries 2
           set net:reconnect-interval-base 5
+          set sftp:auto-confirm yes
 
           mkdir -p "${REMOTE_DIR}"
-          mirror --reverse --delete --parallel=4 "deploy-src" "${REMOTE_DIR}"
+          mirror --reverse --delete --parallel=4 deploy-src "${REMOTE_DIR}"
 
           bye
           EOF
