@@ -287,10 +287,20 @@ jobs:
           IONOS_PASSWORD: ${{ secrets.IONOS_PASSWORD }}
           IONOS_PORT: ${{ secrets.IONOS_PORT }}
           REMOTE_DIR: ${{ needs.build_publish.outputs.target_dir }}
+          TARGET_ENV: ${{ needs.build_publish.outputs.target_env }}
         run: |
           set -euo pipefail
           PORT="${IONOS_PORT:-22}"
           KNOWN_HOSTS="$HOME/.ssh/known_hosts"
+
+          # Delete stale files from the selected deployment root, but never
+          # allow a production sync to remove the sibling staging directory.
+          MIRROR_DELETE="--delete"
+          if [[ "$TARGET_ENV" == "production" ]]; then
+            MIRROR_EXCLUDES="--exclude-glob staging --exclude-glob staging/**"
+          else
+            MIRROR_EXCLUDES=""
+          fi
 
           lftp -u "${IONOS_USER},${IONOS_PASSWORD}" -p "$PORT" "sftp://${IONOS_HOST}" <<EOF
           set cmd:fail-exit yes
@@ -301,8 +311,7 @@ jobs:
           set sftp:connect-program "ssh -a -x -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS -o GlobalKnownHostsFile=/dev/null"
 
           mkdir -p "${REMOTE_DIR}"
-          # Intentionally omit --delete: production's directory contains the staging subdirectory.
-          mirror --reverse --parallel=4 deploy-src "${REMOTE_DIR}"
+          mirror --reverse $MIRROR_DELETE $MIRROR_EXCLUDES --parallel=4 deploy-src "${REMOTE_DIR}"
 
           bye
           EOF
