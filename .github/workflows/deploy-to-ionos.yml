@@ -100,15 +100,24 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
-      # The committed lockfile is currently out of sync with package.json.
-      # Regenerate it in the runner, then use npm ci for the actual clean install.
-      - name: Refresh npm lockfile
-        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      # The committed lockfile has stale/inconsistent integrity entries.
+      # Rebuild it from package.json with a fresh, isolated npm cache.
+      - name: Regenerate npm lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          export npm_config_cache="$RUNNER_TEMP/npm-cache"
+          rm -rf "$npm_config_cache"
+          rm -f package-lock.json
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund --prefer-online
 
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+        shell: bash
+        run: |
+          set -euo pipefail
+          export npm_config_cache="$RUNNER_TEMP/npm-cache"
+          npm ci --no-audit --no-fund --prefer-online
 
       - name: Build React + Vite site
         run: npm run build
