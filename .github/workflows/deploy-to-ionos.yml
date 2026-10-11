@@ -99,7 +99,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       # The committed lockfile has stale/inconsistent integrity entries.
       # Rebuild it from package.json with a fresh, isolated npm cache.
@@ -161,10 +161,10 @@ jobs:
             buildPath: process.env.BUILD_ARTIFACT_PATH
           };
 
-          fs.writeFileSync('build/version.json', JSON.stringify(metadata, null, 2) + '\n');
+          fs.writeFileSync('build/version.json', JSON.stringify(metadata, null, 2) + '\\n');
           fs.writeFileSync(
             'build/version.txt',
-            Object.entries(metadata).map(([key, value]) => `${key}=${value}`).join('\n') + '\n'
+            Object.entries(metadata).map(([key, value]) => `${key}=${value}`).join('\\n') + '\\n'
           );
           NODE
 
@@ -241,7 +241,7 @@ jobs:
           done
 
           mkdir -p "$HOME/.ssh"
-          printf '%s\n' "$IONOS_SFTP_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          printf '%s\\n' "$IONOS_SFTP_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/known_hosts"
           echo "IONOS_PORT defaults to 22 when not configured."
 
