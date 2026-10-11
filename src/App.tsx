@@ -59,8 +59,7 @@ export default function App() {
       <header className="site-header">
         <div className="container nav">
           <a className="brand" href="#home" aria-label="AnnGillette home">
-            <span className="brand-icon" aria-hidden="true">☆</span>
-            <span>AnnGillette</span>
+            <img className="brand-logo" src="/anngillette-logo.png" alt="AnnGillette Tutoring, Learning and Brighter Futures" />
           </a>
 
           <button
