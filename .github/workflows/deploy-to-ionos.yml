@@ -216,7 +216,7 @@ jobs:
           fi
 
   deploy:
-    name: Deploy to IONOS via SFTP
+    name: Deploy to IONOS via rsync over SSH
     needs: build_publish
     if: needs.build_publish.outputs.deploy_enabled == 'true'
     runs-on: ubuntu-latest
@@ -270,12 +270,12 @@ jobs:
           test -s deploy-src/index.html
           echo "Deploying ${TARGET_ENV} to ${TARGET_DIR}"
 
-      - name: Install SFTP deployment tools
+      - name: Install rsync and SSH password authentication
         run: |
           sudo apt-get update
-          sudo apt-get install --yes lftp sshpass
+          sudo apt-get install --yes rsync sshpass
 
-      - name: Deploy to IONOS via SFTP
+      - name: Deploy to IONOS via rsync over SSH
         shell: bash
         env:
           IONOS_HOST: ${{ secrets.IONOS_HOST }}
@@ -288,31 +288,17 @@ jobs:
           set -euo pipefail
           PORT="${IONOS_PORT:-22}"
 
-          mkdir -p "$HOME/.ssh"
-          chmod 700 "$HOME/.ssh"
-          # Discover the server host key so a separate known-hosts secret is not required.
-          # For stronger protection, pin a host key obtained from IONOS through a trusted channel.
-          ssh-keyscan -p "$PORT" -H "$IONOS_HOST" >> "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/known_hosts"
-
-          # Preserve the sibling staging directory during production sync.
-          MIRROR_EXCLUDES=""
-          if [[ "$TARGET_ENV" == "production" ]]; then
-            MIRROR_EXCLUDES="--exclude-glob staging --exclude-glob staging/**"
-          fi
-
+          # This matches the working password-authenticated deployment pattern.
+          # StrictHostKeyChecking=no avoids a known-hosts secret, but does not
+          # protect against a server impersonation attack.
           export SSHPASS="$IONOS_PASSWORD"
 
-          lftp -u "$IONOS_USER" -p "$PORT" "sftp://${IONOS_HOST}" <<EOF
-          set cmd:fail-exit yes
-          set net:timeout 30
-          set net:max-retries 2
-          set net:reconnect-interval-base 5
-          set sftp:connect-program "sshpass -e ssh -a -x -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          RSYNC_EXCLUDES=()
+          if [[ "$TARGET_ENV" == "production" ]]; then
+            # Do not delete the sibling staging deployment during production sync.
+            RSYNC_EXCLUDES+=(--exclude=/staging/)
+          fi
 
-
-          cd "${REMOTE_DIR}"
-          mirror --reverse --delete $MIRROR_EXCLUDES --parallel=4 deploy-src .
-
-          bye
-          EOF
+          rsync --archive --compress --delete "${RSYNC_EXCLUDES[@]}" \
+            -e "sshpass -e ssh -a -x -o StrictHostKeyChecking=no -p $PORT" \
+            deploy-src/ "${IONOS_USER}@${IONOS_HOST}:${REMOTE_DIR}/"
