@@ -229,11 +229,10 @@ jobs:
           IONOS_USER: ${{ secrets.IONOS_USER }}
           IONOS_PASSWORD: ${{ secrets.IONOS_PASSWORD }}
           IONOS_PORT: ${{ secrets.IONOS_PORT }}
-          IONOS_SFTP_KNOWN_HOSTS: ${{ secrets.IONOS_SFTP_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
 
-          for name in IONOS_HOST IONOS_USER IONOS_PASSWORD IONOS_SFTP_KNOWN_HOSTS; do
+          for name in IONOS_HOST IONOS_USER IONOS_PASSWORD; do
             if [[ -z "${!name:-}" ]]; then
               echo "::error::Missing repository secret: $name"
               exit 1
@@ -283,7 +282,6 @@ jobs:
           IONOS_USER: ${{ secrets.IONOS_USER }}
           IONOS_PASSWORD: ${{ secrets.IONOS_PASSWORD }}
           IONOS_PORT: ${{ secrets.IONOS_PORT }}
-          IONOS_SFTP_KNOWN_HOSTS: ${{ secrets.IONOS_SFTP_KNOWN_HOSTS }}
           REMOTE_DIR: ${{ needs.build_publish.outputs.target_dir }}
           TARGET_ENV: ${{ needs.build_publish.outputs.target_env }}
         run: |
@@ -292,7 +290,9 @@ jobs:
 
           mkdir -p "$HOME/.ssh"
           chmod 700 "$HOME/.ssh"
-          printf '%s\n' "$IONOS_SFTP_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          # Discover the server host key so a separate known-hosts secret is not required.
+          # For stronger protection, pin a host key obtained from IONOS through a trusted channel.
+          ssh-keyscan -p "$PORT" -H "$IONOS_HOST" >> "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/known_hosts"
 
           # Preserve the sibling staging directory during production sync.
