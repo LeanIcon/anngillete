@@ -271,10 +271,10 @@ jobs:
           test -s deploy-src/index.html
           echo "Deploying ${TARGET_ENV} to ${TARGET_DIR}"
 
-      - name: Install lftp
+      - name: Install SFTP deployment tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes lftp
+          sudo apt-get install --yes lftp sshpass
 
       - name: Deploy to IONOS via SFTP
         shell: bash
@@ -301,12 +301,15 @@ jobs:
             MIRROR_EXCLUDES="--exclude-glob staging --exclude-glob staging/**"
           fi
 
-          lftp -u "${IONOS_USER},${IONOS_PASSWORD}" -p "$PORT" "sftp://${IONOS_HOST}" <<EOF
+          export SSHPASS="$IONOS_PASSWORD"
+
+          lftp -u "$IONOS_USER" -p "$PORT" "sftp://${IONOS_HOST}" <<EOF
           set cmd:fail-exit yes
           set net:timeout 30
           set net:max-retries 2
           set net:reconnect-interval-base 5
-          set sftp:connect-program "ssh -a -x -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          set sftp:connect-program "sshpass -e ssh -a -x -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+
 
           cd "${REMOTE_DIR}"
           mirror --reverse --delete $MIRROR_EXCLUDES --parallel=4 deploy-src .
