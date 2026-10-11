@@ -164,6 +164,20 @@ img {
   line-height: 1;
 }
 
+.brand-logo {
+  width: clamp(170px, 19vw, 245px);
+  height: 54px;
+  object-fit: contain;
+  object-position: left center;
+}
+
+@media (max-width: 520px) {
+  .brand-logo {
+    width: 156px;
+    height: 44px;
+  }
+}
+
 .nav-links {
   display: flex;
   align-items: center;
