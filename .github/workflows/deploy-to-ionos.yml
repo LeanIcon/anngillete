@@ -1,4 +1,4 @@
-name: Build Branch + Deploy (IONOS SFTP)
+name: Build React + Vite and Deploy to IONOS
 
 on:
   push:
@@ -11,8 +11,10 @@ on:
 permissions:
   contents: write
 
+# One shared build branch is published by both production and staging.
+# Serialize runs so two deployments cannot overwrite the build branch concurrently.
 concurrency:
-  group: build-deploy
+  group: anngillete-build-deploy
   cancel-in-progress: false
 
 jobs:
@@ -39,9 +41,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          EVENT="${GITHUB_EVENT_NAME}"
-
-          if [[ "$EVENT" == "pull_request" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
             BRANCH="${GITHUB_BASE_REF}"
             DEPLOY_ENABLED="false"
             PUBLISH_ENABLED="false"
@@ -57,7 +57,7 @@ jobs:
               TARGET_ENV="staging"
               ARTIFACT_PATH="staging/current"
               ;;
-            main|production)
+            main)
               TARGET_DIR="/kunden/homepages/34/d684835060/htdocs/clients/anngillete"
               TARGET_ENV="production"
               ARTIFACT_PATH="production/current"
@@ -68,15 +68,21 @@ jobs:
               ;;
           esac
 
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-          echo "target_dir=$TARGET_DIR" >> "$GITHUB_OUTPUT"
-          echo "target_env=$TARGET_ENV" >> "$GITHUB_OUTPUT"
-          echo "artifact_path=$ARTIFACT_PATH" >> "$GITHUB_OUTPUT"
-          echo "deploy_enabled=$DEPLOY_ENABLED" >> "$GITHUB_OUTPUT"
-          echo "publish_enabled=$PUBLISH_ENABLED" >> "$GITHUB_OUTPUT"
+          {
+            echo "branch=$BRANCH"
+            echo "target_dir=$TARGET_DIR"
+            echo "target_env=$TARGET_ENV"
+            echo "artifact_path=$ARTIFACT_PATH"
+            echo "deploy_enabled=$DEPLOY_ENABLED"
+            echo "publish_enabled=$PUBLISH_ENABLED"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Print release information
         shell: bash
+        env:
+          BUILD_BRANCH: ${{ steps.ctx.outputs.branch }}
+          BUILD_ENV: ${{ steps.ctx.outputs.target_env }}
+          ARTIFACT_PATH: ${{ steps.ctx.outputs.artifact_path }}
         run: |
           set -euo pipefail
           VERSION="$(cat VERSION 2>/dev/null || echo "0.0.0")"
@@ -84,36 +90,41 @@ jobs:
             echo "### Build summary"
             echo "- Commit: \`${GITHUB_SHA}\`"
             echo "- Event: \`${GITHUB_EVENT_NAME}\`"
-            echo "- Branch: \`${{ steps.ctx.outputs.branch }}\`"
-            echo "- Environment: \`${{ steps.ctx.outputs.target_env }}\`"
-            echo "- Artifact path: \`${{ steps.ctx.outputs.artifact_path }}\`"
+            echo "- Branch: \`${BUILD_BRANCH}\`"
+            echo "- Environment: \`${BUILD_ENV}\`"
+            echo "- Artifact path: \`${ARTIFACT_PATH}\`"
             echo "- Version: \`${VERSION}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
+      # The committed lockfile is currently out of sync with package.json.
+      # Regenerate it in the runner, then use npm ci for the actual clean install.
+      - name: Refresh npm lockfile
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-audit --no-fund
 
-      - name: Generate static site
-        run: npm run generate
+      - name: Build React + Vite site
+        run: npm run build
 
-      - name: Prepare build folder
+      - name: Prepare static deployment directory
         shell: bash
         run: |
           set -euo pipefail
-          test -d .output/public || {
-            echo "::error::Nuxt output directory .output/public was not created."
+          test -f dist/index.html || {
+            echo "::error::Vite build output dist/index.html was not created."
             exit 1
           }
 
           rm -rf build
           mkdir -p build
-          cp -a .output/public/. build/
+          cp -a dist/. build/
 
       - name: Generate version metadata
         shell: bash
@@ -124,10 +135,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          VERSION="$(cat VERSION 2>/dev/null || echo "0.0.0")"
+          VERSION="$(node -p "require('./package.json').version")"
           COMMIT="$(git rev-parse --short HEAD)"
           BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-
           export VERSION COMMIT BUILD_DATE
 
           node <<'NODE'
@@ -142,16 +152,10 @@ jobs:
             buildPath: process.env.BUILD_ARTIFACT_PATH
           };
 
-          fs.writeFileSync(
-            'build/version.json',
-            JSON.stringify(metadata, null, 2) + '\n'
-          );
-
+          fs.writeFileSync('build/version.json', JSON.stringify(metadata, null, 2) + '\n');
           fs.writeFileSync(
             'build/version.txt',
-            Object.entries(metadata)
-              .map(([key, value]) => `${key}=${value}`)
-              .join('\n') + '\n'
+            Object.entries(metadata).map(([key, value]) => `${key}=${value}`).join('\n') + '\n'
           );
           NODE
 
@@ -159,9 +163,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -d build
+          test -s build/index.html
+          test -s build/version.json
           test -n "$(find build -mindepth 1 -maxdepth 1 -print -quit)"
-          echo "Build output is ready."
+          echo "Verified Vite static output."
 
       - name: Publish build output to build branch
         if: steps.ctx.outputs.publish_enabled == 'true'
@@ -174,7 +179,6 @@ jobs:
 
           REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           WORKTREE="/tmp/build-branch"
-
           rm -rf "$WORKTREE"
 
           if git ls-remote --exit-code --heads "$REPO_URL" build >/dev/null 2>&1; then
@@ -186,7 +190,6 @@ jobs:
           fi
 
           cd "$WORKTREE"
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -196,7 +199,6 @@ jobs:
           cp -a "$GITHUB_WORKSPACE/build/." "$ARTIFACT_PATH/"
 
           git add -A
-
           if git diff --cached --quiet; then
             echo "No build-branch changes to commit."
           else
@@ -211,29 +213,27 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Validate IONOS SFTP secrets
+      - name: Validate IONOS secrets and configure trusted host key
         shell: bash
         env:
           IONOS_HOST: ${{ secrets.IONOS_HOST }}
           IONOS_USER: ${{ secrets.IONOS_USER }}
           IONOS_PASSWORD: ${{ secrets.IONOS_PASSWORD }}
           IONOS_PORT: ${{ secrets.IONOS_PORT }}
+          IONOS_SFTP_KNOWN_HOSTS: ${{ secrets.IONOS_SFTP_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
 
-          missing=0
-
-          for name in IONOS_HOST IONOS_USER IONOS_PASSWORD; do
+          for name in IONOS_HOST IONOS_USER IONOS_PASSWORD IONOS_SFTP_KNOWN_HOSTS; do
             if [[ -z "${!name:-}" ]]; then
-              echo "::error::Missing repository secret: ${name}"
-              missing=1
+              echo "::error::Missing repository secret: $name"
+              exit 1
             fi
           done
 
-          if [[ "$missing" -ne 0 ]]; then
-            exit 1
-          fi
-
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$IONOS_SFTP_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
           echo "IONOS_PORT defaults to 22 when not configured."
 
       - name: Checkout build branch snapshot
@@ -252,7 +252,6 @@ jobs:
           TARGET_DIR: ${{ needs.build_publish.outputs.target_dir }}
         run: |
           set -euo pipefail
-
           SRC_DIR="build-branch/${ARTIFACT_PATH}"
 
           if [[ ! -d "$SRC_DIR" ]]; then
@@ -263,7 +262,7 @@ jobs:
           rm -rf deploy-src
           mkdir -p deploy-src
           cp -a "$SRC_DIR/." deploy-src/
-
+          test -s deploy-src/index.html
           echo "Deploying ${TARGET_ENV} to ${TARGET_DIR}"
 
       - name: Install lftp
@@ -281,19 +280,20 @@ jobs:
           REMOTE_DIR: ${{ needs.build_publish.outputs.target_dir }}
         run: |
           set -euo pipefail
-
           PORT="${IONOS_PORT:-22}"
+          KNOWN_HOSTS="$HOME/.ssh/known_hosts"
 
-          lftp -u "${IONOS_USER},${IONOS_PASSWORD}" \
-            -p "$PORT" "sftp://${IONOS_HOST}" <<EOF
+          lftp -u "${IONOS_USER},${IONOS_PASSWORD}" -p "$PORT" "sftp://${IONOS_HOST}" <<EOF
           set cmd:fail-exit yes
           set net:timeout 30
           set net:max-retries 2
           set net:reconnect-interval-base 5
-          set sftp:auto-confirm yes
+          set sftp:auto-confirm no
+          set sftp:connect-program "ssh -a -x -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS -o GlobalKnownHostsFile=/dev/null"
 
           mkdir -p "${REMOTE_DIR}"
-          mirror --reverse --delete --parallel=4 deploy-src "${REMOTE_DIR}"
+          # Intentionally omit --delete: production's directory contains the staging subdirectory.
+          mirror --reverse --parallel=4 deploy-src "${REMOTE_DIR}"
 
           bye
           EOF
