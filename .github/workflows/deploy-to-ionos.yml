@@ -306,7 +306,7 @@ jobs:
           set net:timeout 30
           set net:max-retries 2
           set net:reconnect-interval-base 5
-          set sftp:connect-program "ssh -a -x -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -p %p"
+          set sftp:connect-program "ssh -a -x -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
 
           cd "${REMOTE_DIR}"
           mirror --reverse --delete $MIRROR_EXCLUDES --parallel=4 deploy-src .
