@@ -216,30 +216,31 @@ jobs:
           fi
 
   deploy:
-    name: Deploy to IONOS via FTPS
+    name: Deploy to IONOS via SFTP
     needs: build_publish
     if: needs.build_publish.outputs.deploy_enabled == 'true'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Validate IONOS FTP credentials
+      - name: Validate IONOS SFTP credentials
         shell: bash
         env:
           IONOS_HOST: ${{ secrets.IONOS_HOST }}
           IONOS_USER: ${{ secrets.IONOS_USER }}
           IONOS_PASSWORD: ${{ secrets.IONOS_PASSWORD }}
           IONOS_PORT: ${{ secrets.IONOS_PORT }}
+          IONOS_SFTP_KNOWN_HOSTS: ${{ secrets.IONOS_SFTP_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
 
-          for name in IONOS_HOST IONOS_USER IONOS_PASSWORD; do
+          for name in IONOS_HOST IONOS_USER IONOS_PASSWORD IONOS_SFTP_KNOWN_HOSTS; do
             if [[ -z "${!name:-}" ]]; then
               echo "::error::Missing repository secret: $name"
               exit 1
             fi
           done
 
-          echo "FTPS deployment configured. IONOS_PORT defaults to 21."
+          echo "SFTP deployment configured. IONOS_PORT defaults to 22."
 
       - name: Checkout build branch snapshot
         uses: actions/checkout@v4
@@ -275,37 +276,40 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes lftp
 
-      - name: Deploy to IONOS via FTPS
+      - name: Deploy to IONOS via SFTP
         shell: bash
         env:
           IONOS_HOST: ${{ secrets.IONOS_HOST }}
           IONOS_USER: ${{ secrets.IONOS_USER }}
           IONOS_PASSWORD: ${{ secrets.IONOS_PASSWORD }}
           IONOS_PORT: ${{ secrets.IONOS_PORT }}
+          IONOS_SFTP_KNOWN_HOSTS: ${{ secrets.IONOS_SFTP_KNOWN_HOSTS }}
           REMOTE_DIR: ${{ needs.build_publish.outputs.target_dir }}
           TARGET_ENV: ${{ needs.build_publish.outputs.target_env }}
         run: |
           set -euo pipefail
-          PORT="${IONOS_PORT:-21}"
+          PORT="${IONOS_PORT:-22}"
 
-          # Delete stale files from the selected deployment root, but never
-          # allow a production sync to remove the sibling staging directory.
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$IONOS_SFTP_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+          # Preserve the sibling staging directory during production sync.
           MIRROR_EXCLUDES=""
           if [[ "$TARGET_ENV" == "production" ]]; then
             MIRROR_EXCLUDES="--exclude-glob staging --exclude-glob staging/**"
           fi
 
-          lftp -u "${IONOS_USER},${IONOS_PASSWORD}" -p "$PORT" "ftp://${IONOS_HOST}" <<EOF
+          lftp -u "${IONOS_USER},${IONOS_PASSWORD}" -p "$PORT" "sftp://${IONOS_HOST}" <<EOF
           set cmd:fail-exit yes
           set net:timeout 30
           set net:max-retries 2
           set net:reconnect-interval-base 5
-          set ftp:ssl-force true
-          set ftp:ssl-protect-data true
-          set ssl:verify-certificate yes
+          set sftp:connect-program "ssh -a -x -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -p %p"
 
-          mkdir -p "${REMOTE_DIR}"
-          mirror --reverse --delete $MIRROR_EXCLUDES --parallel=4 deploy-src "${REMOTE_DIR}"
+          cd "${REMOTE_DIR}"
+          mirror --reverse --delete $MIRROR_EXCLUDES --parallel=4 deploy-src .
 
           bye
           EOF
