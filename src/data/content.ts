@@ -96,6 +96,6 @@ export const SAMPLE_QUESTIONS: MiniQuestion[] = [
   }
 ];
 
-export const LOGO_URL = 'https://lh3.googleusercontent.com/aida-public/AB6AXuBMi3zx29-m9J1S0W0PDPssmK_k1IvcIdT9dRiimEY1e2raeZ5Hdc9Pipb99R9L3gtC55i8pWIOIX2PL-fCx3aeIzxIqxiOUhvQRm1x6nieits0EaNS0myGx8LeuYKNxMJfrM-27dt8apSP73ohhlXXqJLC2fmio8wHqCD79F_YGJVpNyD7HmZRYYU2_qMMiO7sS649LErJ9sG3sNgl-HgxwH59StayZmhdVVjEraSeuD45cWLESx6PRs4DvcYFRFgCLyY';
+export const LOGO_URL = '/anngillette-logo.png';
 
 export const HERO_IMAGE_URL = 'https://lh3.googleusercontent.com/aida-public/AB6AXuCAwthtXQlEiwloPw-OLm4yXPbcty_WS_jCR4X5M0hoQTze_ArWcqzhvdQ4dkQw2yt9U0L0sBzIv7FDLBv8OfJA-QMM5BZyO5rtmH5Ant2RdN4P5JfQHp6RR_-9-o0HgpL2lfx3cZZYnOq1HSD6QKfAUJiXrl_iqyzsUmTov2W7jVFV5AeQzn0bopbY5ivG5bEGFX4leDLQQlXdfgJfh5NwetA9aBLtdNiCc3yMRT5MV5kUqIKU6gVbtQ';
